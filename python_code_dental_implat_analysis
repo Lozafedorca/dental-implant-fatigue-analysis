@@ -1,0 +1,193 @@
+import os
+import numpy as np
+import pandas as pd 
+import matplotlib.pyplot as plt
+import seaborn as sns
+from numba import jit
+import pickle
+
+os.chdir(r"C:\Users\fedor\Desktop\Tesi\campioni")
+
+
+df = pd.read_csv("28C 01212025 013906_std.CSV")
+
+
+df.head()
+
+#df.columns = df.columns.str.strip()
+
+df.head()
+# 1. Keep only the first row
+first_row = df.iloc[[0]]
+df_rest = df.iloc[1:]
+df_rest = df_rest[~df_rest.iloc[:, 0].astype(str).str.contains('Axial Counts', na=False)]
+df = pd.concat([first_row, df_rest], ignore_index=True)
+df = df.reset_index(drop=True)
+
+# 2. Convert 'Axial Counts' in numeric
+df['Axial Counts'] = pd.to_numeric(df['Axial Counts'], errors='coerce')
+
+# 3. Create continuos array for the cycle
+block_size = 100
+continuous_counts = []
+offset = 0
+
+for i in range(0, len(df), block_size):
+    block = df['Axial Counts'].iloc[i:i + block_size].to_numpy()
+    if len(block) == 0 or np.all(np.isnan(block)):
+        continue
+    # Crea blocco continuo aggiungendo offset
+    block = block + offset
+    continuous_counts.extend(block)
+    offset = continuous_counts[-1] + 1  # Aggiorna offset per blocco successivo
+
+# 4. change dataframe
+df = df.iloc[:len(continuous_counts)].copy()  # Allinea la lunghezza
+df['Axial Counts Continuous'] = continuous_counts
+
+df = df.iloc[205 :].reset_index(drop=True)
+time = df['Axial Counts Continuous'].to_numpy()
+signal = df['Disp'].to_numpy()
+signal = pd.to_numeric(df['Disp'], errors='coerce').to_numpy(dtype=np.float64)
+time = pd.to_numeric(df['Axial Counts Continuous'], errors='coerce').to_numpy(dtype=np.float64)
+valid_idx = ~np.isnan(signal) & ~np.isnan(time)
+signal = signal[valid_idx]
+time = time[valid_idx]
+
+a= len(time)
+
+
+@jit
+def subtract(a):
+    m = max(a)
+    result = []
+    for x in a:
+        result.append(x - m)
+    return result
+
+
+signal_centered = subtract(signal)
+
+
+signal_centered = np.array(signal_centered)
+
+
+
+
+plt.figure(figsize = (14, 8))
+a = plt.hist2d(time, signal_centered, bins = 600, cmap = 'cool', cmin = 0.1)
+
+plt.colorbar(label = "Counts")
+plt.xlabel("N° of cycles")
+plt.ylabel("Displacement [mm]")
+plt.show() 
+
+
+
+x_edges = a[1]
+y_edges = a[2] 
+
+x_centers = 0.5 * (x_edges[:-1] + x_edges[1:]) 
+y_centers = 0.5 * (y_edges[:-1] + y_edges[1:])  
+
+
+
+displacement_min = np.full(len(x_centers), np.nan)
+displacement_max = np.full(len(x_centers), np.nan)
+
+for col in range(len(x_centers) - 1):
+    
+    time_idx = (time >= x_edges[col]) & (time < x_edges[col +1])
+    displacement_bins = signal_centered[time_idx]
+    
+    if len(displacement_bins) > 0:
+        displacement_min[col] = np.max(displacement_bins)
+        displacement_max[col] = np.min(displacement_bins)
+        
+time_centers = 0.5 * (x_edges[:-1] + x_edges[1:])
+
+
+def calculate_delta(a, b):
+    return [ai - bi for ai, bi in zip(a, b)]
+
+
+
+delta = calculate_delta(displacement_max, displacement_min)
+
+
+# find the first non-nan value in the min displacement
+first_valid = displacement_min[~np.isnan(displacement_min)][0]
+
+
+displacement_min_centered = displacement_min - first_valid
+displacement_max_centered = displacement_max - first_valid
+
+# calculate delta differences
+delta = calculate_delta(displacement_max_centered, displacement_min_centered)
+
+
+
+plt.figure(figsize = (10,6))
+plt.plot(time_centers[1:], displacement_min_centered[1:], label = 'Minimum displacement', color = 'blue')
+plt.plot(time_centers, displacement_max_centered, label = 'Maximum displacement', color = 'red')
+
+#plt.plot(time_centers[1:-1], delta[1:-1], label = 'Delta displacement', color = 'skyblue')
+plt.xlabel("N° of cycles")
+plt.ylabel("Displacement [mm]")
+plt.legend()
+plt.title("Sample 28C: 50-500N")
+plt.show()
+
+
+data_n18c = {
+    'time': time_centers,
+    'displacement min': displacement_min_centered,
+    'displacement max': displacement_max_centered,
+    'delta': delta
+}
+
+
+
+with open('data_n18c.pickle', 'wb') as handle:
+    pickle.dump(data_n18c, handle, protocol = pickle.HIGHEST_PROTOCOL)
+    
+#with open('filename.pickle', 'rb') as handle:
+    #b = pickle.load(handle)
+    
+    
+    data_n18c = pd.DataFrame({'cycle': data_n18c['time'], 'displacement min': data_n18c['displacement min'], 'displacement max': data_n18c['displacement max'], 'delta': data_n18c['delta'], 'Sample': 'Sample n16c', 'Load': '50-500N'}).reset_index(drop=True)
+    
+    
+    # find first row valid value for both disp
+mask_valid = ~data_n18c['displacement min'].isna() & ~data_n18c['displacement max'].isna()
+last_valid_row = data_n18c[mask_valid].iloc[-1]
+
+# fracture cycle
+ciclo_rottura = last_valid_row['cycle']
+disp_min_rottura = last_valid_row['displacement min']
+disp_max_rottura = last_valid_row['displacement max']
+delta_rottura = last_valid_row['delta']
+
+# show results
+print("⚠️ Punto di rottura identificato graficamente:")
+fracture_label = f"Fracture at cycle: {int(ciclo_rottura)}"
+print(f"- Displacement min: {disp_min_rottura:.4f} mm")
+print(f"- Displacement max: {disp_max_rottura:.4f} mm")
+print(f"- Delta: {delta_rottura:.4f} mm")
+sns.set(style = "darkgrid")
+plt.figure(figsize = (14, 8))
+plot = sns.lineplot(data = data_n18c, x = 'cycle', y = 'displacement min', linewidth = 2, label = 'Minimum displacement -0.2811 mm')
+plot = sns.lineplot(data = data_n18c, x = 'cycle', y = 'displacement max', linewidth = 2, label = 'Maximum displacement -0.6031 mm')
+#Traccia fittizia invisibile solo per mostrare il testo nella legenda
+plt.plot([], [], ' ', label=fracture_label)  # ' ' (spazio) evita linea
+#plot = sns.lineplot(data = data_n18c, x = 'cycle', y = 'delta', linewidth = 2, label = 'Delta displacement')
+
+
+plot.set_xlabel("N° of Cycles", fontsize = 12)
+plot.set_ylabel("Displacement [mm]", fontsize = 12)
+
+plot.legend(bbox_to_anchor = (1.05, 1), loc = 'upper left')
+
+sns.despine()
+plt.tight_layout()
+plt.show()
